@@ -443,6 +443,16 @@ public final class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     public override func resignFirstResponder() -> Bool {
+        // 조합 중에 포커스를 잃으면(탭 전환, 에이전트가 연 탭) 그 글자를 직접 확정해 이 터미널로 보낸다.
+        // 입력기도 확정을 보내 주지만 키 이벤트 없이 오면(NSApp.currentEvent == nil) insertText가 버려서
+        // 글자가 사라졌다(10/31 제보). 입력기에는 조합을 버리라고 해 두 번 들어가지 않게 한다.
+        if markedText.length > 0, keyTextAccumulator == nil {
+            let text = markedText.string
+            markedText.mutableString.setString("")
+            inputContext?.discardMarkedText()
+            syncPreedit()
+            _ = committedText(GHOSTTY_ACTION_PRESS, text: text)
+        }
         let result = super.resignFirstResponder()
         if result, let surface { ghostty_surface_set_focus(surface, false) }
         return result
@@ -576,7 +586,8 @@ public final class GhosttyTerminalView: NSView, NSTextInputClient {
 
         let action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
         keyTextAccumulator = []
-        defer { keyTextAccumulator = nil }
+        imeCommands = []
+        defer { keyTextAccumulator = nil; imeCommands = nil }
         let markedTextBefore = markedText.length > 0
         let layoutBefore: String? = markedTextBefore ? nil : Self.keyboardLayoutID
         lastPerformKeyEvent = nil
@@ -589,13 +600,11 @@ public final class GhosttyTerminalView: NSView, NSTextInputClient {
         let composing = markedText.length > 0 || markedTextBefore
 
         // 조합 중이던 글자가 이 키로 확정됐으면 확정된 글자를 따로 보내고, 그 뒤에도 터미널에
-        // 닿아야 하는 키(방향키)만 다시 보낸다.
+        // 닿아야 하는 키만 다시 보낸다.
         if markedTextBefore, let list = keyTextAccumulator, !list.isEmpty {
-            commitComposition(list.filter { !Self.isComposingControl($0, composing: composing) },
-                              composing: markedText.string, action: action)
-            if Self.shouldReplayAfterCommit(translationEvent) {
-                _ = keyAction(action, event: event, translationEvent: translationEvent, composing: false)
-            }
+            finishCommit(list.filter { !Self.isComposingControl($0, composing: composing) },
+                         composing: markedText.string, requested: imeCommands ?? [], action: action,
+                         event: event, translationEvent: translationEvent)
             return
         }
         syncPreedit(clearIfNeeded: markedTextBefore)
@@ -694,6 +703,7 @@ public final class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     public override func doCommand(by selector: Selector) {
+        imeCommands?.append(selector)
         // 메뉴가 처리하지 않은 ⌃ 조합을 이벤트 큐로 되돌려 keyDown에서 인코딩되게 한다.
         if let last = lastPerformKeyEvent, let current = NSApp.currentEvent, last == current.timestamp {
             NSApp.sendEvent(current)
@@ -803,6 +813,33 @@ public final class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     private var preeditGeneration = 0
+    /// keyDown 안에서만 non-nil. 입력기가 이 키로 앱에 요청한 명령(뒤로 지우기, 줄 바꾸기 등).
+    private var imeCommands: [Selector]?
+
+    /// 입력기가 이 키로 조합을 확정했을 때. 두벌식은 조합 중 마지막 자모를 지울 때 그 자모를 확정하고
+    /// 뒤로 지우기를 요청한다(insertText "ㄱ" + deleteBackward:, 10/31 입력 기록). 다른 앱은 확정한 글자에
+    /// 그 명령을 적용해 지워지는데, 확정 글자만 보내고 요청을 버리면 "ㄱ"이 입력란에 남아 지우기를 한 번 더
+    /// 눌러야 했다(10/31 제보). 그래서 입력기가 명령을 요청했으면 확정 글자 뒤에 그 키도 터미널로 보낸다.
+    /// 이때는 잡아 두지 않는다 — 그 키가 방금 글자를 바로 지우거나 줄을 넘긴다.
+    func finishCommit(_ texts: [String], composing after: String, requested: [Selector],
+                      action: ghostty_input_action_e, event: NSEvent, translationEvent: NSEvent) {
+        guard Self.shouldReplayAfterCommit(translationEvent) || Self.imeRequestedKey(requested, event: translationEvent) else {
+            commitComposition(texts, composing: after, action: action)
+            return
+        }
+        if markedText.string != after { markedText = NSMutableAttributedString(string: after) }
+        syncPreedit()
+        for text in texts { _ = committedText(action, text: text) }
+        _ = keyAction(action, event: event, translationEvent: translationEvent, composing: false)
+    }
+
+    /// 입력기가 확정과 함께 이 키의 명령을 요청했는가. 맨 왼쪽 화살표는 입력기가 이미 커서를 두므로 뺀다
+    /// (shouldReplayAfterCommit과 같은 이유).
+    static func imeRequestedKey(_ requested: [Selector], event: NSEvent) -> Bool {
+        guard !requested.isEmpty else { return false }
+        if event.keyCode == 123, event.modifierFlags.isDisjoint(with: [.shift, .control, .option, .command]) { return false }
+        return true
+    }
 
     public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
 
