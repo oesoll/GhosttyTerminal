@@ -1,0 +1,187 @@
+diff --git a/include/ghostty.h b/include/ghostty.h
+index 9a12b9c..42576de 100644
+--- a/include/ghostty.h
++++ b/include/ghostty.h
+@@ -1204,6 +1204,7 @@ GHOSTTY_API bool ghostty_surface_key_is_binding(ghostty_surface_t,
+ GHOSTTY_API void ghostty_surface_text(ghostty_surface_t, const char*, uintptr_t);
+ GHOSTTY_API void ghostty_surface_paste_text(ghostty_surface_t, const char*, uintptr_t);
+ GHOSTTY_API void ghostty_surface_preedit(ghostty_surface_t, const char*, uintptr_t);
++GHOSTTY_API void ghostty_surface_preedit_hold(ghostty_surface_t, const char*, uintptr_t, const char*, uintptr_t);
+ GHOSTTY_API bool ghostty_surface_mouse_captured(ghostty_surface_t);
+ GHOSTTY_API bool ghostty_surface_mouse_button(ghostty_surface_t,
+                                                  ghostty_input_mouse_state_e,
+diff --git a/src/Surface.zig b/src/Surface.zig
+index 369bb23..120a21b 100644
+--- a/src/Surface.zig
++++ b/src/Surface.zig
+@@ -872,6 +872,7 @@ pub fn deinit(self: *Surface) void {
+ 
+     // Clean up our render state
+     if (self.renderer_state.preedit) |p| self.alloc.free(p.codepoints);
++    if (self.renderer_state.preedit_hold) |hold| if (hold.after) |a| self.alloc.free(a.codepoints);
+     self.alloc.destroy(self.renderer_state.mutex);
+     self.config.deinit();
+ 
+@@ -2693,6 +2694,9 @@ pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) !void {
+         self.renderer_state.preedit = null;
+     }
+ 
++    // sm patch (preedit-hold): an explicit preedit replaces any held commit.
++    self.clearPreeditHold();
++
+     // Mark preedit dirty flag
+     self.io.terminal.flags.dirty.preedit = true;
+ 
+@@ -2737,6 +2741,52 @@ pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) !void {
+     try self.queueRender();
+ }
+ 
++/// sm patch (preedit-hold): show `display` (just-committed text plus any new composition) as
++/// preedit until the program's output moves the cursor, then show `after` (the new composition,
++/// or nothing). Call this instead of clearing the preedit when an input method commits, before
++/// sending the committed text to the pty.
++pub fn preeditHoldCallback(self: *Surface, display: []const u8, after: ?[]const u8) !void {
++    const display_preedit = try self.preeditFromText(display);
++    errdefer if (display_preedit) |p| self.alloc.free(p.codepoints);
++    const after_preedit = if (after) |text| try self.preeditFromText(text) else null;
++    errdefer if (after_preedit) |p| self.alloc.free(p.codepoints);
++
++    self.renderer_state.mutex.lockUncancelable(global.io());
++    defer self.renderer_state.mutex.unlock(global.io());
++
++    if (self.renderer_state.preedit) |p| self.alloc.free(p.codepoints);
++    self.clearPreeditHold();
++    self.renderer_state.preedit = display_preedit;
++    const cursor = self.renderer_state.terminal.screens.active.cursor;
++    self.renderer_state.preedit_hold = .{ .after = after_preedit, .x = cursor.x, .y = cursor.y };
++    self.io.terminal.flags.dirty.preedit = true;
++    try self.queueRender();
++}
++
++/// Caller holds the renderer state lock.
++fn clearPreeditHold(self: *Surface) void {
++    if (self.renderer_state.preedit_hold) |hold| {
++        if (hold.after) |a| self.alloc.free(a.codepoints);
++        self.renderer_state.preedit_hold = null;
++    }
++}
++
++/// UTF-8 → preedit codepoints, as preeditCallback does. Null if nothing is drawable.
++fn preeditFromText(self: *Surface, text: []const u8) !?rendererpkg.State.Preedit {
++    const view = try std.unicode.Utf8View.init(text);
++    var it = view.iterator();
++    const Codepoint = rendererpkg.State.Preedit.Codepoint;
++    var codepoints: std.ArrayList(Codepoint) = .empty;
++    defer codepoints.deinit(self.alloc);
++    while (it.nextCodepoint()) |cp| {
++        const width: usize = @intCast(unicode.table.get(cp).width);
++        if (width <= 0) continue;
++        try codepoints.append(self.alloc, .{ .codepoint = cp, .wide = width >= 2 });
++    }
++    if (codepoints.items.len == 0) return null;
++    return .{ .codepoints = try codepoints.toOwnedSlice(self.alloc) };
++}
++
+ /// Returns true if the given key event would trigger a keybinding
+ /// if it were to be processed. This is useful for determining if
+ /// a key event should be sent to the terminal or not.
+diff --git a/src/apprt/embedded.zig b/src/apprt/embedded.zig
+index 697f0a7..dc6f468 100644
+--- a/src/apprt/embedded.zig
++++ b/src/apprt/embedded.zig
+@@ -1128,6 +1128,14 @@ pub const Surface = struct {
+         };
+     }
+ 
++    /// sm patch (preedit-hold).
++    pub fn preeditHoldCallback(self: *Surface, display: []const u8, after: ?[]const u8) void {
++        _ = self.core_surface.preeditHoldCallback(display, after) catch |err| {
++            log.err("error in preedit hold callback err={}", .{err});
++            return;
++        };
++    }
++
+     pub fn textCallback(self: *Surface, text: []const u8) void {
+         _ = self.core_surface.textCallback(text) catch |err| {
+             log.err("error in key callback err={}", .{err});
+@@ -2138,6 +2146,20 @@ pub const CAPI = struct {
+         surface.preeditCallback(if (len == 0) null else ptr[0..len]);
+     }
+ 
++    /// sm patch (preedit-hold): keep a just-committed IME text on screen until it is echoed.
++    export fn ghostty_surface_preedit_hold(
++        surface: *Surface,
++        display: [*]const u8,
++        display_len: usize,
++        after: [*]const u8,
++        after_len: usize,
++    ) void {
++        surface.preeditHoldCallback(
++            display[0..display_len],
++            if (after_len == 0) null else after[0..after_len],
++        );
++    }
++
+     /// Returns true if the surface currently has mouse capturing
+     /// enabled.
+     export fn ghostty_surface_mouse_captured(surface: *Surface) bool {
+diff --git a/src/renderer/State.zig b/src/renderer/State.zig
+index 1184221..bc77f56 100644
+--- a/src/renderer/State.zig
++++ b/src/renderer/State.zig
+@@ -29,6 +29,13 @@ inspector: ?*Inspector = null,
+ /// a future exercise.
+ preedit: ?Preedit = null,
+ 
++/// sm patch (preedit-hold): text an input method just committed, kept on screen as preedit
++/// until the program echoes it. Clearing the preedit at commit left the syllable blank until the
++/// program redrew its input line (tens of ms in Claude Code), so committed Korean flickered.
++/// Termio swaps `preedit` for `after` once output has moved the cursor off (x, y), under the same
++/// lock as the output, so no frame shows the text twice or not at all.
++preedit_hold: ?PreeditHold = null,
++
+ /// Mouse state. This only contains state relevant to what renderers
+ /// need about the mouse.
+ mouse: Mouse = .{},
+@@ -116,6 +123,13 @@ pub const Mouse = struct {
+     mods: inputpkg.Mods = .{},
+ };
+ 
++/// See `preedit_hold`.
++pub const PreeditHold = struct {
++    after: ?Preedit,
++    x: terminalpkg.size.CellCountInt,
++    y: terminalpkg.size.CellCountInt,
++};
++
+ /// The pre-edit state. See Surface.preeditCallback for more information.
+ pub const Preedit = struct {
+     /// The codepoints to render as preedit text.
+diff --git a/src/termio/Termio.zig b/src/termio/Termio.zig
+index 49bd6e0..5855a4d 100644
+--- a/src/termio/Termio.zig
++++ b/src/termio/Termio.zig
+@@ -710,8 +710,23 @@ pub fn processOutput(self: *Termio, buf: []const u8) void {
+     self.processOutputLocked(buf);
+ }
+ 
++/// sm patch (preedit-hold). Caller holds the renderer state lock.
++fn releasePreeditHold(self: *Termio) void {
++    const hold = self.renderer_state.preedit_hold orelse return;
++    const cursor = self.terminal.screens.active.cursor;
++    if (cursor.x == hold.x and cursor.y == hold.y) return;
++    if (self.renderer_state.preedit) |p| self.alloc.free(p.codepoints);
++    self.renderer_state.preedit = hold.after;
++    self.renderer_state.preedit_hold = null;
++    self.terminal.flags.dirty.preedit = true;
++}
++
+ /// Process output from readdata but the lock is already held.
+ fn processOutputLocked(self: *Termio, buf: []const u8) void {
++    // sm patch (preedit-hold): once this output has moved the cursor, the held commit has been
++    // echoed — swap the preedit in the same locked step, so no frame shows it twice or not at all.
++    defer self.releasePreeditHold();
++
+     // Schedule a render. We can call this first because we have the lock.
+     self.terminal_stream.handler.queueRender() catch unreachable;
+ 

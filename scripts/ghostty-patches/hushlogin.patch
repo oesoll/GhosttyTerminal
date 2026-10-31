@@ -1,0 +1,13 @@
+--- a/src/termio/Exec.zig
++++ b/src/termio/Exec.zig
+@@ -1870,7 +1870,9 @@
+             };
+             defer dir.close(global.io());
+ 
+-            break :hush if (dir.access(global.io(), ".hushlogin", .{})) true else |_| false;
++            // SpaceManager: 패널마다 login(1)의 "Last login" 줄이 찍히지 않게 늘 -q로 띄운다.
++            _ = dir.access(global.io(), ".hushlogin", .{}) catch {};
++            break :hush true;
+         } else false;
+ 
+         // If we made it this far we're going to start building

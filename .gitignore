@@ -1,0 +1,6 @@
+.build/
+.swiftpm/
+Package.resolved
+.DS_Store
+# scripts/build-ghostty.sh의 산출물(140MB 남짓)
+Frameworks/

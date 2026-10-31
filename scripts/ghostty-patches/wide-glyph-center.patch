@@ -1,0 +1,26 @@
+diff --git a/src/renderer/generic.zig b/src/renderer/generic.zig
+index df70aa3..764737b 100644
+--- a/src/renderer/generic.zig
++++ b/src/renderer/generic.zig
+@@ -3504,6 +3504,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                     .constraint = getConstraint(cp) orelse
+                         if (cellpkg.isSymbol(cp)) .{
+                             .size = .fit,
++                        } else if (cell.gridWidth() == 2) .{
++                            // SpaceManager: 두 칸짜리 글자(한글 등)는 대체 글꼴의 글리프가 두 칸보다 좁아
++                            // 왼쪽에 붙고 뒤가 비었다. 두 칸 안 가운데에 놓아 글자 사이가 고르게 보이게 한다.
++                            .align_horizontal = .center,
+                         } else .none,
+                     .constraint_width = constraintWidth(
+                         cell_raws,
+@@ -3641,6 +3645,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
+                     .grid_metrics = self.grid_metrics,
+                     .thicken = self.config.font_thicken,
+                     .thicken_strength = self.config.font_thicken_strength,
++                    // SpaceManager: 조합 중인 글자도 본문과 같이 두 칸 가운데에 — 밑줄(두 칸)과 맞는다.
++                    .cell_width = if (cp.wide) 2 else 1,
++                    .constraint = if (cp.wide) .{ .align_horizontal = .center } else .none,
++                    .constraint_width = if (cp.wide) 2 else 1,
+                 },
+             ) catch |err| {
+                 log.warn("error rendering preedit glyph err={}", .{err});
