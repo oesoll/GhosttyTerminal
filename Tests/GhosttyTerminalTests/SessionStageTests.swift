@@ -113,6 +113,11 @@ final class SessionStageTests: XCTestCase {
         XCTAssertTrue(stage.scene === old)
     }
 
+    /// 깨는 중 효과의 그림(점 격자·빛의 가림막)이 실제로 만들어진다 — 못 만들면 효과가 소리 없이 사라진다.
+    func testWakeEffectArtworkRenders() {
+        XCTAssertNotNil(GhosttySessionStage.alphaImageForTests([0, 128, 255, 64], width: 2, height: 2))
+    }
+
     /// 밝은 테마는 옅게 덮는다(회색으로 무너지지 않게).
     func testDimFollowsTheTheme() {
         stage.theme = GhosttyTheme(colors: ["background": "#fafafa"])
