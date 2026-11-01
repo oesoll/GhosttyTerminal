@@ -72,6 +72,7 @@ public final class GhosttyTerminalView: NSView, NSTextInputClient {
         self.launch = launch ?? Launch(command: nil, workingDirectory: NSHomeDirectory())
         self.theme = theme
         super.init(frame: NSRect(origin: .zero, size: initialSize ?? NSSize(width: 800, height: 600)))
+        Self.live.add(self)
         // 파일·글을 끌어다 놓으면 붙여 넣는다(GhosttyTerminalView+Native).
         registerForDraggedTypes(Array(Self.dropTypes))
         guard let launch else { return }
@@ -167,13 +168,44 @@ public final class GhosttyTerminalView: NSView, NSTextInputClient {
     public required init?(coder: NSCoder) { fatalError("not supported") }
 
     deinit {
+        Self.live.remove(Unmanaged.passUnretained(self).toOpaque())
         keyObservers.forEach(NotificationCenter.default.removeObserver)
         if let surface { ghostty_surface_free(surface) }
     }
 
+    /// libghostty 콜백의 userdata(이 뷰를 retain하지 않은 포인터)를 뷰로 되돌린다. 살아 있는 뷰만 돌려준다.
+    ///
+    /// 포인터를 그대로 되살리면 안 된다: 콜백이 메인 큐로 미뤄진 사이, 또는 해제 도중 표면을 풀 때 불린
+    /// 콜백에서 뷰는 이미 사라졌을 수 있고, 그 객체에 메시지를 보내면 앱이 죽는다(11/01 sm이 닫힌 표면
+    /// 콜백에서 네 번 죽었다). 그래서 살아 있는 뷰를 약하게 적어 두고 거기서만 찾는다. 콜백은 아무
+    /// 스레드에서나 오므로, 부르는 쪽은 그 자리에서 찾아 강하게 붙잡은 뒤 메인으로 넘긴다.
     static func from(_ userdata: UnsafeMutableRawPointer?) -> GhosttyTerminalView? {
         guard let userdata else { return nil }
-        return Unmanaged<GhosttyTerminalView>.fromOpaque(userdata).takeUnretainedValue()
+        return live.view(userdata)
+    }
+
+    private static let live = LiveViews()
+
+    private final class LiveViews: @unchecked Sendable {
+        private struct Entry { weak var view: GhosttyTerminalView? }
+        private let lock = NSLock()
+        private var entries: [UnsafeMutableRawPointer: Entry] = [:]
+
+        func add(_ view: GhosttyTerminalView) {
+            lock.lock(); defer { lock.unlock() }
+            entries[Unmanaged.passUnretained(view).toOpaque()] = Entry(view: view)
+        }
+
+        func remove(_ key: UnsafeMutableRawPointer) {
+            lock.lock(); defer { lock.unlock() }
+            entries[key] = nil
+        }
+
+        /// 해제가 시작된 뷰는 약한 참조가 nil이라 돌려주지 않는다.
+        func view(_ key: UnsafeMutableRawPointer) -> GhosttyTerminalView? {
+            lock.lock(); defer { lock.unlock() }
+            return entries[key]?.view
+        }
     }
 
     // MARK: - 앱 쪽 연결

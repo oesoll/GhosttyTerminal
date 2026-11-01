@@ -48,7 +48,9 @@ public final class GhosttyRuntime {
                 GhosttyRuntime.writeClipboard(location: location, content: content, count: count)
             },
             close_surface_cb: { userdata, _ in
-                DispatchQueue.main.async { GhosttyTerminalView.from(userdata)?.surfaceDidClose() }
+                // 뷰는 지금 찾아 블록이 붙잡게 한다. 블록 안에서 찾으면 그 사이 해제된 뷰를 건드린다.
+                guard let view = GhosttyTerminalView.from(userdata) else { return }
+                DispatchQueue.main.async { view.surfaceDidClose() }
             }
         )
         app = ghostty_app_new(&runtime, config)

@@ -125,3 +125,32 @@ final class GhosttyTerminationTests: XCTestCase {
         XCTAssertNil(ProcessGroupReaper.identity(of: pid), "child survived the reaper")
     }
 }
+
+/// libghostty 콜백이 뷰를 되찾는 길: 해제된 뷰를 되살리지 않는다(11/01 sm 크래시).
+@MainActor
+final class CallbackLookupTests: XCTestCase {
+    func testAFreedViewIsNotRevivedFromItsPointer() {
+        _ = NSApplication.shared
+        var pointer: UnsafeMutableRawPointer?
+        autoreleasepool {
+            let view = GhosttyTerminalView(launch: nil, theme: .fallback)
+            pointer = Unmanaged.passUnretained(view).toOpaque()
+            XCTAssertTrue(GhosttyTerminalView.from(pointer) === view)
+        }
+        XCTAssertNil(GhosttyTerminalView.from(pointer))
+    }
+
+    func testClosingASurfaceThenDroppingTheViewDoesNotCrash() throws {
+        _ = NSApplication.shared
+        try XCTSkipUnless(GhosttyRuntime.shared.isAvailable, "libghostty did not initialise")
+        for _ in 0..<20 {
+            autoreleasepool {
+                let view = GhosttyTerminalView(launch: .init(command: "/bin/sh -c 'exit 0'", workingDirectory: NSHomeDirectory()),
+                                               theme: .fallback, initialSize: NSSize(width: 320, height: 160))
+                RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+                view.terminate()
+            }
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+    }
+}
