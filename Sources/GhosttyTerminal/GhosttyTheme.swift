@@ -21,6 +21,13 @@ public struct GhosttyTheme: Hashable, Sendable {
         "foreground": "#e4e4e6",
     ])
 
+    /// 바탕이 어두운가(바탕색의 상대 휘도 0.4 미만). 바탕을 모르면 어둡다고 본다.
+    public var isDark: Bool {
+        guard let color = colors["background"].flatMap(Self.parse) else { return true }
+        let luminance = (0.2126 * Double(color.red) + 0.7152 * Double(color.green) + 0.0722 * Double(color.blue)) / 255
+        return luminance < 0.4
+    }
+
     static let ansiNames = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
                             "brightBlack", "brightRed", "brightGreen", "brightYellow",
                             "brightBlue", "brightMagenta", "brightCyan", "brightWhite"]
