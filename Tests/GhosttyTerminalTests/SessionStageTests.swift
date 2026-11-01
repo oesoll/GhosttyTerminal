@@ -13,6 +13,7 @@ final class SessionStageTests: XCTestCase {
         try XCTSkipUnless(GhosttyRuntime.shared.isAvailable, "libghostty did not initialise")
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 320), styleMask: [.titled],
                           backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false   // ARC가 해제한다 — close()가 한 번 더 해제하면 시험이 죽는다
         stage = GhosttySessionStage(frame: NSRect(x: 0, y: 0, width: 640, height: 320))
         window.contentView = stage
     }
