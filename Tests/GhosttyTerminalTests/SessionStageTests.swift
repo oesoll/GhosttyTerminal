@@ -84,6 +84,20 @@ final class SessionStageTests: XCTestCase {
         XCTAssertTrue(stage.live === fresh)
     }
 
+    /// 원격 탭 다시 연결: 연결이 늦어 출력이 한동안 없어도 빈 화면을 드러내지 않고, 출력이 와서 조용해지면 걷는다.
+    func testReconnectWaitsForTheFirstOutputBeforeRevealing() {
+        let old = surface("/bin/sh -c 'printf \"BEFORE DROP\\n\"'")
+        stage.show(old)
+        XCTAssertTrue(wait { old.readText(lastLines: 5)?.contains("BEFORE DROP") == true })
+        stage.freeze(look: .waking)   // 연결 중
+        let fresh = surface("/bin/sh -c 'sleep 3.5; printf \"REPLAYED\\n\"; exec sleep 30'")
+        stage.attach(fresh)
+        stage.revealWhenQuiet(after: 0.25, limit: 3, patience: 20)
+        XCTAssertFalse(wait(3.2) { !self.stage.isCovered }, "revealed an empty screen while still connecting")
+        XCTAssertTrue(wait(5) { !self.stage.isCovered }, "never revealed after the output arrived")
+        XCTAssertEqual(fresh.readText(lastLines: 5)?.contains("REPLAYED"), true)
+    }
+
     /// 앱을 다시 켜서 프레임이 없을 때: 세션 층이 남긴 화면 바이트가 장면이 된다.
     func testReplayedScreenBecomesTheScene() {
         let bytes = Data("\u{1b}[2J\u{1b}[H마지막 화면\r\n> 대기 중\r\n".utf8)

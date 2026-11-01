@@ -178,11 +178,15 @@ public final class GhosttySessionStage: NSView {
     // MARK: - 걷기
 
     /// 새 표면이 `quiet`초 동안 화면을 바꾸지 않으면 걷는다(에이전트가 화면을 다 채웠다). 세션 층이 준비됐다고
-    /// 알린 뒤에 부른다. 끝없이 바뀌는 화면(진행 표시)도 `limit`초면 걷는다.
-    public func revealWhenQuiet(after quiet: TimeInterval = 0.25, limit: TimeInterval = 3) {
+    /// 알린 뒤에, 또는 원격 탭이 다시 연결되기 시작할 때(그동안은 물을 곳이 없다 — 앱이 정한다) 부른다.
+    /// 끝없이 바뀌는 화면(진행 표시)도 첫 출력부터 `limit`초면 걷는다. 출력이 아직 하나도 없으면(연결 중)
+    /// `patience`초까지 기다린다 — 연결이 늦다고 빈 화면을 드러내지 않게.
+    public func revealWhenQuiet(after quiet: TimeInterval = 0.25, limit: TimeInterval = 3,
+                                patience: TimeInterval = 30) {
         guard isCovered, live != nil else { return }
         stopQuietWatch()
         let started = Date()
+        var firstOutput: Date?
         var lastText: String?
         var lastChange = started
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
@@ -191,8 +195,11 @@ public final class GhosttySessionStage: NSView {
                 let now = Date()
                 let text = live.readText(lastLines: 400)
                 if text != lastText { lastText = text; lastChange = now }
-                let settled = text?.isEmpty == false && now.timeIntervalSince(lastChange) >= quiet
-                if settled || now.timeIntervalSince(started) >= limit { self.reveal() }
+                let hasOutput = text?.isEmpty == false
+                if hasOutput, firstOutput == nil { firstOutput = now }
+                let settled = hasOutput && now.timeIntervalSince(lastChange) >= quiet
+                let tooLong = firstOutput.map { now.timeIntervalSince($0) >= limit } ?? false
+                if settled || tooLong || now.timeIntervalSince(started) >= patience { self.reveal() }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
