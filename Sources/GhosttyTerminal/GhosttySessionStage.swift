@@ -46,7 +46,20 @@ public final class GhosttySessionStage: NSView {
     public var captionBottomInset: CGFloat = 14 { didSet { needsLayout = true } }
     /// 막의 짙기를 고르는 기준(밝은 테마는 옅게).
     public var theme: GhosttyTheme = .fallback {
-        didSet { if isCovered { applyLook(animated: false) } }
+        didSet {
+            glow.accent = (accent ?? Self.defaultAccent(dark: theme.isDark)).cgColor
+            if isCovered { applyLook(animated: false) }
+        }
+    }
+    /// 깨는 동안 가장자리를 도는 빛의 색. 없으면 sm의 강조색(warmPink) — 강조색은 "무언가 돌고 있다"는
+    /// 활동 표시에만 쓴다는 sm의 원칙에 깨어나는 중이 꼭 맞는다.
+    public var accent: NSColor? {
+        didSet { glow.accent = (accent ?? Self.defaultAccent(dark: theme.isDark)).cgColor }
+    }
+
+    static func defaultAccent(dark: Bool) -> NSColor {
+        dark ? NSColor(srgbRed: 0xf2 / 255.0, green: 0x73 / 255.0, blue: 0x80 / 255.0, alpha: 1)
+             : NSColor(srgbRed: 0xc8 / 255.0, green: 0x48 / 255.0, blue: 0x5a / 255.0, alpha: 1)
     }
 
     private let veil = NSView()
@@ -227,8 +240,8 @@ public final class GhosttySessionStage: NSView {
             leaving.wantsLayer = true
             fade(leaving.layer, to: 0, duration: duration, curve: curve)
         }
-        // 빛은 막보다 천천히, 가장자리로 물러나며 사라진다(ego가 손을 놓을 때처럼).
-        glow.withdraw(duration: Self.reduceMotion ? 0.2 : 1.2, retreat: !Self.reduceMotion)
+        // 빛은 막보다 천천히, 돌던 채로 옅어진다.
+        glow.withdraw(duration: Self.reduceMotion ? 0.2 : 0.9)
         DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.05) { finish() }
         onReveal?()
     }
@@ -288,8 +301,8 @@ public final class GhosttySessionStage: NSView {
         guard let layer = veil.layer else { return }
         let target: Float = look == .clear ? 0 : dimOpacity
         fade(layer, to: target, duration: animated ? 0.25 : 0, curve: CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1))
-        // 깨는 동안: 막 위로 점 격자와 파란 빛이 가장자리에서 스며들고, 빛이 숨쉰다.
-        if look == .waking { glow.seepIn(animated: animated) } else { glow.withdraw(duration: animated ? 0.3 : 0, retreat: false) }
+        // 깨는 동안: 가장자리에 강조색 빛이 맺혀 천천히 돌고, 가장자리 쪽에 옅은 점 격자가 비친다.
+        if look == .waking { glow.seepIn(animated: animated) } else { glow.withdraw(duration: animated ? 0.3 : 0) }
     }
 
     /// 지금 보이는 값에서 출발해 옮긴다 — 도중에 바뀌어도 튀지 않는다.
@@ -382,37 +395,50 @@ public final class GhosttySessionStage: NSView {
     }
 }
 
-/// 깨는 중의 가장자리 효과(ego lite·Codex가 브라우저를 잡을 때의 그것, SEOL 11/01): 막 위의 작은 사각 점
-/// 격자(가장자리일수록 밝다)와 가장자리에서 안쪽으로 번지는 파란 빛(모서리가 진하다). 빛은 0.32↔1.0을 2.5초에
-/// 한 번 사인처럼 오간다. 모든 전환은 보이는 값에서 출발한다 — 끊기거나 튀는 순간이 없어야 한다.
+/// 깨는 중의 가장자리 효과. ego lite·Codex가 브라우저를 잡을 때의 가장자리 빛을 참고만 했고(SEOL 11/01),
+/// 우리 앱 식으로 다시 만들었다: 색은 sm의 강조색, 세기는 은은하게, 숨쉬는 대신 빛의 밝은 자리가 가장자리를
+/// 따라 천천히(한 바퀴 9초) 돈다. 가장자리 쪽에만 아주 옅은 점 격자가 비친다.
 ///
-/// 그림은 크기가 정해질 때 한 번 만든다: 점 격자는 화면 배율 그대로(선명해야 한다), 빛은 1/6 크기로 만들어
-/// 늘린다(매끈한 그라데이션이라 보간이 오히려 부드럽다). 보이지 않을 때는 그림을 버린다.
+/// 구성: 가장자리 띠 모양의 가림막(안쪽 약 80pt에서 사라짐, 모서리가 진함)을 쓴 그릇 안에서, 원뿔 그라데이션
+/// (밝은 호 둘 — 하나는 진하고 하나는 옅다)이 돈다. 그릇은 돌지 않으므로 빛은 늘 테두리 위에만 맺힌다.
+/// 모든 전환은 보이는 값에서 출발한다 — 끊기거나 튀는 순간이 없어야 한다.
 private final class WakeGlow: NSView {
-    static let blue = CGColor(srgbRed: 0x35 / 255.0, green: 0x80 / 255.0, blue: 0xf0 / 255.0, alpha: 1)
-    private let glowLayer = CALayer()
-    private let glowMask = CALayer()
+    var accent: CGColor = GhosttySessionStage.defaultAccent(dark: true).cgColor {
+        didSet { applyAccent() }
+    }
+    private let orbit = CALayer()
+    private let orbitMask = CALayer()
+    private let light = CAGradientLayer()
     private let dotsLayer = CALayer()
     private let dotsMask = CALayer()
     private var rendered: (size: CGSize, scale: CGFloat)?
     private var active = false
     private var withdrawToken = 0
+    static let turn: CFTimeInterval = 9
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.masksToBounds = true   // 물러나는 빛이 무대 밖으로 번지지 않게
+        layer?.masksToBounds = true
         isHidden = true
-        for (layer, mask, color) in [(dotsLayer, dotsMask, CGColor(gray: 1, alpha: 1)), (glowLayer, glowMask, Self.blue)] {
-            layer.backgroundColor = color
-            layer.opacity = 0
+        dotsLayer.backgroundColor = CGColor(gray: 1, alpha: 1)
+        dotsLayer.mask = dotsMask
+        orbit.mask = orbitMask
+        light.type = .conic
+        light.startPoint = CGPoint(x: 0.5, y: 0.5)
+        light.endPoint = CGPoint(x: 0.5, y: 0)
+        orbit.addSublayer(light)
+        for mask in [orbitMask, dotsMask] {
             mask.contentsGravity = .resize
             mask.minificationFilter = .linear
             mask.magnificationFilter = .linear
-            layer.mask = mask
-            self.layer?.addSublayer(layer)
         }
         dotsMask.magnificationFilter = .nearest
+        for layer in [dotsLayer, orbit] {
+            layer.opacity = 0
+            self.layer?.addSublayer(layer)
+        }
+        applyAccent()
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
@@ -420,68 +446,56 @@ private final class WakeGlow: NSView {
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+    /// 밝은 호 둘: 진한 것(0.55)과 맞은편의 옅은 것(0.28). 그 사이에도 아주 옅은 빛(0.08)이 깔려 테두리가 끊기지
+    /// 않는다. 첫 색과 끝 색이 같아 이음매가 없다.
+    private func applyAccent() {
+        let tone = { (alpha: CGFloat) in self.accent.copy(alpha: alpha) ?? self.accent }
+        light.colors = [0.08, 0.08, 0.55, 0.08, 0.08, 0.28, 0.08, 0.08].map(tone)
+        light.locations = [0, 0.04, 0.17, 0.32, 0.56, 0.68, 0.82, 1]
+    }
+
     override func layout() {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        for layer in [glowLayer, glowMask, dotsLayer, dotsMask] { layer.frame = bounds }
-        glowLayer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
-        glowLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        for layer in [orbit, orbitMask, dotsLayer, dotsMask] { layer.frame = bounds }
+        // 도는 원뿔은 대각선 길이의 정사각형이라 어느 각도에서도 그릇을 덮는다.
+        let side = hypot(bounds.width, bounds.height)
+        light.bounds = CGRect(x: 0, y: 0, width: side, height: side)
+        light.position = CGPoint(x: bounds.midX, y: bounds.midY)
         CATransaction.commit()
         if active { renderIfNeeded() }
     }
 
-    /// 스며든다: 천천히 시작해 부드럽게 멈추며 들어오고(0.6초), 이어 숨쉰다.
+    /// 맺힌다: 천천히 시작해 부드럽게 멈추며 들어오고(0.7초), 빛은 처음부터 돌고 있다.
     func seepIn(animated: Bool) {
         withdrawToken += 1
-        let wasActive = active
         active = true
         isHidden = false
         renderIfNeeded()
-        let reduce = GhosttySessionStage.reduceMotion
-        let entry = animated ? 0.6 : 0
-        glowLayer.removeAnimation(forKey: "breathe")
-        glowLayer.removeAnimation(forKey: "retreat")
-        glowLayer.transform = CATransform3DIdentity
-        // 속도 0에서 출발해 속도 0으로 멈춘다 — 들어오는 첫 프레임이 튀지 않게.
+        let entry = animated ? 0.7 : 0
         let ease = CAMediaTimingFunction(controlPoints: 0.4, 0, 0.2, 1)
-        fade(dotsLayer, to: 0.85, duration: entry, curve: ease)
-        fade(glowLayer, to: reduce ? 0.6 : 1, duration: wasActive ? min(entry, 0.3) : entry, curve: ease)
-        guard !reduce else { return }
-        let breathe = CABasicAnimation(keyPath: "opacity")
-        breathe.fromValue = 1
-        breathe.toValue = 0.32
-        breathe.duration = 1.25
-        breathe.autoreverses = true
-        breathe.repeatCount = .infinity
-        breathe.timingFunction = CAMediaTimingFunction(controlPoints: 0.37, 0, 0.63, 1)   // 사인에 가까운 곡선
-        breathe.beginTime = CACurrentMediaTime() + entry
-        breathe.fillMode = .forwards
-        glowLayer.add(breathe, forKey: "breathe")
+        fade(dotsLayer, to: 1, duration: entry, curve: ease)
+        fade(orbit, to: 1, duration: entry, curve: ease)
+        guard !GhosttySessionStage.reduceMotion, light.animation(forKey: "turn") == nil else { return }
+        let turn = CABasicAnimation(keyPath: "transform.rotation.z")
+        turn.fromValue = 0
+        turn.toValue = -2 * Double.pi   // 시계 방향
+        turn.duration = Self.turn
+        turn.repeatCount = .infinity
+        turn.timingFunction = CAMediaTimingFunction(name: .linear)
+        light.add(turn, forKey: "turn")
     }
 
-    /// 물러난다: 지금 보이는 밝기에서 0으로. `retreat`이면 빛의 띠가 가장자리 밖으로 밀려나며 사라진다.
-    func withdraw(duration: CFTimeInterval, retreat: Bool) {
+    /// 옅어진다: 지금 보이는 세기에서 0으로. 도는 것은 멈추지 않는다(멈추는 순간이 튀어 보인다).
+    func withdraw(duration: CFTimeInterval) {
         guard active else { return }
         active = false
         withdrawToken += 1
         let token = withdrawToken
-        let current = glowLayer.presentation()?.opacity ?? glowLayer.opacity
-        glowLayer.removeAnimation(forKey: "breathe")
-        glowLayer.opacity = current
         let curve = CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1)
-        fade(dotsLayer, to: 0, duration: min(duration, 0.35), curve: curve)
-        fade(glowLayer, to: 0, duration: duration, curve: curve)
-        if retreat, duration > 0, bounds.width > 0, bounds.height > 0 {
-            let spread = CATransform3DMakeScale(1 + 70 / bounds.width, 1 + 70 / bounds.height, 1)
-            let move = CABasicAnimation(keyPath: "transform")
-            move.fromValue = glowLayer.presentation()?.transform ?? CATransform3DIdentity
-            move.toValue = spread
-            move.duration = duration
-            move.timingFunction = curve
-            glowLayer.transform = spread
-            glowLayer.add(move, forKey: "retreat")
-        }
+        fade(dotsLayer, to: 0, duration: min(duration, 0.4), curve: curve)
+        fade(orbit, to: 0, duration: duration, curve: curve)
         DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.05) { [weak self] in
             guard let self, self.withdrawToken == token else { return }
             self.stop()
@@ -492,16 +506,15 @@ private final class WakeGlow: NSView {
     func stop() {
         active = false
         withdrawToken += 1
-        for layer in [glowLayer, dotsLayer] { layer.removeAllAnimations(); layer.opacity = 0 }
-        glowLayer.transform = CATransform3DIdentity
+        for layer in [orbit, dotsLayer] { layer.removeAllAnimations(); layer.opacity = 0 }
+        light.removeAllAnimations()
         dotsMask.contents = nil
-        glowMask.contents = nil
+        orbitMask.contents = nil
         rendered = nil
         isHidden = true
     }
 
-    private func fade(_ layer: CALayer, to value: Float, duration: CFTimeInterval,
-                      curve: CAMediaTimingFunction = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)) {
+    private func fade(_ layer: CALayer, to value: Float, duration: CFTimeInterval, curve: CAMediaTimingFunction) {
         let current = layer.presentation()?.opacity ?? layer.opacity
         layer.removeAnimation(forKey: "fade")
         layer.opacity = value
@@ -526,7 +539,7 @@ private final class WakeGlow: NSView {
         CATransaction.setDisableActions(true)
         dotsMask.contents = Self.dotGrid(size: size, scale: scale)
         dotsMask.contentsScale = scale
-        glowMask.contents = Self.edgeFalloff(size: size, step: 6)
+        orbitMask.contents = Self.edgeFalloff(size: size, step: 6)
         CATransaction.commit()
     }
 
@@ -541,7 +554,7 @@ private final class WakeGlow: NSView {
         return 1 - (1 - ex) * (1 - ey)
     }
 
-    /// 빛의 가림막: 가장자리 1.0 → 안쪽 약 120pt에서 0.
+    /// 빛의 가림막: 가장자리 1.0 → 안쪽 약 80pt에서 0.
     static func edgeFalloff(size: CGSize, step: CGFloat) -> CGImage? {
         let width = max(2, Int((size.width / step).rounded(.up))), height = max(2, Int((size.height / step).rounded(.up)))
         var bytes = [UInt8](repeating: 0, count: width * height)
@@ -549,13 +562,13 @@ private final class WakeGlow: NSView {
             for column in 0..<width {
                 let x = (CGFloat(column) + 0.5) * size.width / CGFloat(width)
                 let y = (CGFloat(row) + 0.5) * size.height / CGFloat(height)
-                bytes[row * width + column] = UInt8(255 * edge(x: x, y: y, size: size, reach: 120, power: 1.5))
+                bytes[row * width + column] = UInt8(255 * edge(x: x, y: y, size: size, reach: 80, power: 1.7))
             }
         }
         return alphaImage(bytes, width: width, height: height)
     }
 
-    /// 점 격자: 점 1.5pt, 간격 8pt, 화면 배율 그대로. 가운데는 옅게(0.14), 가장자리로 갈수록 밝게(0.8).
+    /// 점 격자: 점 1.5pt, 간격 8pt, 화면 배율 그대로. 가장자리 쪽에만 옅게(최대 0.26) — 가운데는 비운다.
     static func dotGrid(size: CGSize, scale: CGFloat) -> CGImage? {
         let width = Int((size.width * scale).rounded()), height = Int((size.height * scale).rounded())
         guard width > 0, height > 0 else { return nil }
@@ -565,7 +578,7 @@ private final class WakeGlow: NSView {
         while Int(y) + dot <= height {
             var x = (spacing - CGFloat(dot)) / 2
             while Int(x) + dot <= width {
-                let strength = 0.14 + 0.66 * edge(x: x / scale, y: y / scale, size: size, reach: 240, power: 1.3)
+                let strength = 0.26 * edge(x: x / scale, y: y / scale, size: size, reach: 160, power: 1.4)
                 let value = UInt8(255 * strength)
                 for dy in 0..<dot {
                     let base = (Int(y) + dy) * width + Int(x)
