@@ -17,13 +17,14 @@ What you get beyond raw libghostty:
 - Dropped files paste as shell-escaped paths, a right-click menu, VoiceOver support, ⌘= / ⌘- / ⌘0 font size.
 - `write(_:)` for raw bytes, `readText(lastLines:)` for the screen, callbacks for the bell, desktop notifications (OSC 9/777) and progress (OSC 9;4).
 - `terminate(reapingAfter:)`: closing a surface sends SIGHUP once, and programs that ignore it (Claude Code does) would otherwise outlive the window.
+- `GhosttySessionStage` for terminals that show a session living elsewhere (a multiplexer, an agent host): it keeps the last frame under a dim veil while the session rests, lets the new surface draw hidden underneath while it wakes (a slow light circles the edges), and fades the frame away once the new screen settles — keys typed meanwhile are held and delivered in order. `endProcess()` ends a surface's child but keeps its last screen.
 
 ## Install
 
 Apple Silicon, macOS 14 or later.
 
 ```swift
-.package(url: "https://github.com/oesoll/GhosttyTerminal.git", from: "0.1.0")
+.package(url: "https://github.com/oesoll/GhosttyTerminal.git", from: "0.2.0")
 // target dependency:
 .product(name: "GhosttyTerminal", package: "GhosttyTerminal")
 ```
