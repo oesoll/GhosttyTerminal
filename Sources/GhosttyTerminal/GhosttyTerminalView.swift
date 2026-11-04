@@ -230,6 +230,14 @@ public final class GhosttyTerminalView: NSView, NSTextInputClient {
         return pid > 0 ? pid_t(pid) : nil
     }
 
+    /// The child has ended, by the exit action or by asking libghostty directly. The action can fail to arrive
+    /// (seen on a pane in a hidden tab), and a caller waiting only for `onExit` then waits forever.
+    public var processHasExited: Bool {
+        if exited { return true }
+        guard let surface else { return false }
+        return ghostty_surface_process_exited(surface)
+    }
+
     /// 띄울 차례를 기다리는 표면도 도는 것으로 친다 — 세션이 그 사이에 다시 띄우지 않게.
     public var isProcessRunning: Bool { (surface != nil || pendingLaunch != nil) && !exited }
 
