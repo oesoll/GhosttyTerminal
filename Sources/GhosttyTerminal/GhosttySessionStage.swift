@@ -121,8 +121,13 @@ public final class GhosttySessionStage: NSView {
         generation += 1
         stopQuietWatch()
         if let live, live !== scene {
-            if let scene { discard(scene) }
-            scene = live
+            if scene != nil, isCovered {
+                // 걷히기 전에 다시 얼린다(다시 붙다 끊김 등): 보인 적 없는 새 표면 대신 보이던 장면을 그대로 둔다.
+                discard(live)
+            } else {
+                if let scene { discard(scene) }
+                scene = live
+            }
         }
         live = nil
         cover(look: look)
@@ -146,12 +151,16 @@ public final class GhosttySessionStage: NSView {
     }
 
     /// 새 표면을 장면 아래에 깐다. 키는 계속 무대가 붙잡고, CLI 쓰기·읽기는 이 표면이 받는다.
+    /// 장면이 있으면 새 표면은 걷힐 때까지 보이지 않는다(그리기는 계속한다). 아래에 깔기만 하면 바탕이 투명한
+    /// 표면(Fine의 장면 위 탭)에서는 두 화면이 겹쳐 보였고, 다시 그린 화면이 한 줄 어긋나면 글자가 두 겹이었다
+    /// (11/09).
     public func attach(_ view: GhosttyTerminalView) {
         generation += 1
         stopQuietWatch()
         if let live, live !== view, live !== scene { discard(live) }
         if let scene {
             place(view, below: scene)
+            setVisible(view, false)
         } else {
             place(view, below: veil)
         }
@@ -181,7 +190,9 @@ public final class GhosttySessionStage: NSView {
     /// 알린 뒤에, 또는 원격 탭이 다시 연결되기 시작할 때(그동안은 물을 곳이 없다 — 앱이 정한다) 부른다.
     /// 끝없이 바뀌는 화면(진행 표시)도 첫 출력부터 `limit`초면 걷는다. 출력이 아직 하나도 없으면(연결 중)
     /// `patience`초까지 기다린다 — 연결이 늦다고 빈 화면을 드러내지 않게.
-    public func revealWhenQuiet(after quiet: TimeInterval = 0.25, limit: TimeInterval = 3,
+    /// `limit`이 짧은 이유: 일하는 에이전트는 스피너가 계속 돌아 조용해지지 않는다. 3초였을 때는 새 화면이 이미
+    /// 다 그려졌는데도 막이 1–3초 더 가렸다(11/09).
+    public func revealWhenQuiet(after quiet: TimeInterval = 0.2, limit: TimeInterval = 0.8,
                                 patience: TimeInterval = 30) {
         guard isCovered, live != nil else { return }
         stopQuietWatch()
@@ -221,34 +232,32 @@ public final class GhosttySessionStage: NSView {
         heldKeys = []
         keys.forEach { live.keyDown(with: $0) }
 
+        // 장면과 새 표면은 한 프레임에 바꾼다. 둘을 겹쳐 옅게 바꾸면, 다시 그린 화면이 한 줄만 어긋나도 그동안
+        // 글자가 두 겹으로 보였다(11/09). 같은 화면이면 바뀌는 순간이 보이지 않는다.
         let leaving = scene
         scene = nil
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        setVisible(live, true)
+        if let leaving, leaving !== live { discard(leaving) }
+        CATransaction.commit()
         let finish = { [weak self] in
-            guard let self else { return }
-            // 떠나던 장면은 그 사이 다시 덮였어도 치운다(새 덮개는 자기 장면을 따로 갖는다).
-            if let leaving, leaving !== self.scene, leaving !== self.live { self.discard(leaving) }
-            if self.generation == token { self.veil.isHidden = true }
+            guard let self, self.generation == token else { return }
+            self.veil.isHidden = true
         }
         veil.layer?.removeAllAnimations()
-        guard animated, window != nil, !Self.reduceMotion || leaving != nil else {
+        guard animated, window != nil, !Self.reduceMotion else {
             veil.layer?.opacity = 0
             glow.stop()
             finish()
             onReveal?()
             return
         }
-        let duration = Self.reduceMotion ? 0.2 : 0.35
-        let curve = Self.reduceMotion ? CAMediaTimingFunction(name: .linear)
-                                      : CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1)
-        // 장면과 막을 같은 곡선으로 함께 옅게 한다. AppKit의 animator()는 Ghostty 표면에서 애니메이션 없이 바로
-        // 적용되고 완료도 곧바로 불러, 막이 한 프레임에 사라졌다(11/01 프레임 측정) — 그래서 레이어에 직접 건다.
-        fade(veil.layer, to: 0, duration: duration, curve: curve)
-        if let leaving {
-            leaving.wantsLayer = true
-            fade(leaving.layer, to: 0, duration: duration, curve: curve)
-        }
-        // 빛은 막보다 천천히, 돌던 채로 옅어진다.
-        glow.withdraw(duration: Self.reduceMotion ? 0.2 : 0.9)
+        // 막과 빛은 짧게 걷힌다 — 새 화면이 보이는 순간부터는 가리지 않는 편이 낫다. AppKit의 animator()는 Ghostty
+        // 표면 위에서 애니메이션 없이 바로 적용되어(11/01 프레임 측정) 레이어에 직접 건다. 빛은 돌던 채로 옅어진다.
+        let duration = 0.22
+        fade(veil.layer, to: 0, duration: duration, curve: CAMediaTimingFunction(controlPoints: 0.25, 0.1, 0.25, 1))
+        glow.withdraw(duration: 0.3)
         DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.05) { finish() }
         onReveal?()
     }
@@ -279,7 +288,7 @@ public final class GhosttySessionStage: NSView {
         self.look = look
         veil.isHidden = false
         shield.isHidden = false
-        if let scene { scene.alphaValue = 1; scene.isShown = true }
+        if let scene { scene.alphaValue = 1; scene.isShown = true; setVisible(scene, true) }
         addSubview(veil, positioned: .above, relativeTo: nil)
         addSubview(glow, positioned: .above, relativeTo: nil)
         addSubview(shield, positioned: .above, relativeTo: nil)
@@ -352,9 +361,17 @@ public final class GhosttySessionStage: NSView {
                              width: size.width, height: size.height)
     }
 
+    /// 그리기는 멈추지 않고 보이기만 바꾼다(숨긴 뷰는 그리지 않아, 걷는 순간 빈 프레임이 비칠 수 있다).
+    private func setVisible(_ view: GhosttyTerminalView, _ visible: Bool) {
+        view.wantsLayer = true
+        view.layer?.removeAnimation(forKey: "fade")
+        view.layer?.opacity = visible ? 1 : 0
+    }
+
     private func place(_ view: GhosttyTerminalView, below other: NSView) {
         view.frame = bounds
         view.alphaValue = 1
+        setVisible(view, true)
         view.isShown = true
         if view.superview !== self { addSubview(view, positioned: .below, relativeTo: other) }
         else { addSubview(view, positioned: .below, relativeTo: other) }

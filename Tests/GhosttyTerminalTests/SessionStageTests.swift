@@ -84,6 +84,37 @@ final class SessionStageTests: XCTestCase {
         XCTAssertTrue(stage.live === fresh)
     }
 
+    /// 덮인 동안 새 표면은 보이지 않고(투명한 바탕에서 두 화면이 겹치지 않게), 걷히는 순간 장면과 한 번에 바뀐다
+    /// — 두 화면을 겹쳐 옅게 바꾸면 한 줄 어긋난 글자가 두 겹으로 보였다(11/09).
+    func testNewSurfaceStaysHiddenUnderTheSceneAndSwapsAtOnce() {
+        let old = surface("/bin/sh -c 'printf \"OLD\\n\"'")
+        stage.show(old)
+        XCTAssertTrue(wait { old.readText(lastLines: 5)?.contains("OLD") == true })
+        stage.freeze(look: .clear)
+        let fresh = surface("/bin/sh -c 'printf \"NEW\\n\"; exec sleep 30'")
+        stage.attach(fresh)
+        XCTAssertEqual(fresh.layer?.opacity, 0, "the new surface shows through under the scene")
+        XCTAssertEqual(old.layer?.opacity ?? 1, 1)
+        XCTAssertTrue(wait { fresh.readText(lastLines: 5)?.contains("NEW") == true }, "a hidden surface stopped drawing")
+        stage.reveal()
+        XCTAssertEqual(fresh.layer?.opacity, 1)
+        XCTAssertNil(old.superview, "the scene lingered over the new surface")
+    }
+
+    /// 걷히기 전에 다시 얼면(다시 붙다가 또 끊김) 보이던 장면을 지킨다 — 보인 적 없는 새 표면이 장면이 되지 않는다.
+    func testRefreezingBeforeRevealKeepsTheShownScene() {
+        let old = surface("/bin/sh -c 'printf \"SHOWN\\n\"'")
+        stage.show(old)
+        XCTAssertTrue(wait { old.readText(lastLines: 5)?.contains("SHOWN") == true })
+        stage.freeze(look: .clear)
+        let fresh = surface("/bin/sh -c 'exec sleep 30'")
+        stage.attach(fresh)
+        stage.freeze(look: .waking)
+        XCTAssertTrue(stage.scene === old)
+        XCTAssertNil(stage.live)
+        XCTAssertNil(fresh.superview)
+    }
+
     /// 원격 탭 다시 연결: 연결이 늦어 출력이 한동안 없어도 빈 화면을 드러내지 않고, 출력이 와서 조용해지면 걷는다.
     func testReconnectWaitsForTheFirstOutputBeforeRevealing() {
         let old = surface("/bin/sh -c 'printf \"BEFORE DROP\\n\"'")
